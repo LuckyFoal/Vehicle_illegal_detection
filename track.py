@@ -12,10 +12,11 @@ import paddlehub as hub
 
 import utils.Strategy as Strategy
 import utils.vehicle as Vehicle
+import utils.test as Test
 import yaml
 
 
-def yolov_inference(image, video, model_id, image_size, conf_threshold):
+def yolov_inference(image, video, model_id, image_size = 640, conf_threshold = 0.4):
     yolo = Strategy.YOLOSelector.get_model(model_id)
     # print(yolo.names) # 获取模型类别索引
     if image is not None:
@@ -98,8 +99,15 @@ def detect_plate(vehicle_region):
     :param vehicle_region: 车辆裁剪区域
     :return: (px1, py1, px2, py2) 车牌坐标
     """
-    # 这里需要实现车牌检测模型，目前假设返回整个车辆区域作为车牌
+    # # 这里需要实现车牌检测模型，目前假设返回整个车辆区域作为车牌
     h, w, _ = vehicle_region.shape
+    # return 0, int(0.6 * h), w, h  # 简单模拟车牌区域
+    model = Strategy.YOLOSelector.get_model('yolov11n-plate')
+    result =  model.predict(vehicle_region)
+    if result and result[0].boxes is not None:
+        for box in result[0].boxes:
+            x1, y1, x2, y2 = box.xyxy.tolist()[0]
+            return int(x1), int(y1), int(x2), int(y2)
     return 0, int(0.6 * h), w, h  # 简单模拟车牌区域
 
 
@@ -195,20 +203,6 @@ def detector(source, model_id, image_size=640, conf_threshold=0.4):
         print(f"Processed video saved at {output_path}")
     cv2.destroyAllWindows()
 
-def getTextFromOCR(results):
-    textList = []
-    for result in results:
-        for text in result['data']:
-            textList.append(text['text'])
-    return textList
-
 if __name__ == "__main__":
-    # ocr = hub.Module(name="ch_pp-ocrv3", enable_mkldnn=True)
-    # ocr_result = ocr.recognize_text(images=[cv2.imread('res/input/图片1.png')], visualization=False, )
-    # ocr_text = getTextFromOCR(ocr_result)
-    # print(ocr_text)
-    detector('res/input/test.mp4', 'yolov12')
-
-
-
-
+    Test.test()
+    detector('res/input/short.mp4', 'yolov12')

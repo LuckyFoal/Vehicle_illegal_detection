@@ -35,6 +35,13 @@ class YOLOv12Strategy(YOLOStrategy):
     def get_model(self):
         return YOLO("yolo12n.pt")  # YOLOv12 模型
 
+class YOLO11nPlateStrategy(YOLOStrategy):
+    def get_model(self):
+        # 读取配置文件
+        config = load_config()
+        model_path = config.get("model_path")
+        return YOLO(f"{model_path}/y11n-pose_plate_best.pt")  # YOLOv11 模型
+
 # 7. 选择策略
 class YOLOSelector:
     _strategies = {
@@ -42,6 +49,7 @@ class YOLOSelector:
         "yolov8": YOLOv8Strategy(),
         "yolov11": YOLOv11Strategy(),
         "yolov12": YOLOv12Strategy(),
+        "yolov11n-plate": YOLO11nPlateStrategy()
     }
 
     @staticmethod
