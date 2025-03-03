@@ -117,12 +117,13 @@ def process_frame(frame, deepsort, model_id, image_size, conf_threshold):
 
     for output in outputs:
         x1, y1, x2, y2, track_id = output[:5]
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
-        cv2.putText(frame, f'ID: {track_id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         if track_id not in Vehicle.VEHICLES:
             Vehicle.VEHICLES[track_id] = Vehicle.Vehicle(track_id, None, bbox_rel(x1, y1, x2, y2))
             print(f"New vehicle detected: ID {track_id}")
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        cv2.putText(frame, f'ID: {track_id} Plate: {Vehicle.VEHICLES[track_id].plate_number}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         vehicle_region = frame[y1:y2, x1:x2]  # 裁剪车辆区域
         plate_coords = detect_plate(vehicle_region)  # 车牌检测
@@ -201,7 +202,7 @@ if __name__ == "__main__":
     # ocr_result = ocr.recognize_text(images=[cv2.imread('res/input/图片1.png')], visualization=False, )
     # ocr_text = getTextFromOCR(ocr_result)
     # print(ocr_text)
-    detector('res/input/图片1.png', 'yolov12')
+    detector('res/input/test.mp4', 'yolov12')
 
 
 
