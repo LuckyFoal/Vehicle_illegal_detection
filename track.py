@@ -17,6 +17,7 @@ import yaml
 
 def yolov_inference(image, video, model_id, image_size, conf_threshold):
     yolo = Strategy.YOLOSelector.get_model(model_id)
+    # print(yolo.names) # 获取模型类别索引
     if image is not None:
         return yolo(image)
     else:
@@ -64,13 +65,17 @@ def detect_objects(frame, model_id, image_size, conf_threshold):
     """使用 YOLO 进行目标检测"""
     detections = yolov_inference(frame, frame, model_id, image_size, conf_threshold)
     bbox_xywh, confs = [], []
+    CAR_CLASS_IDS = {1, 2, 3, 5, 7}  # 0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane', 5: 'bus', 6: 'train', 7: 'truck',....
 
     if detections and detections[0].boxes is not None:
         boxes = detections[0].boxes.xywh.cpu().numpy()  # (x, y, w, h)
         conf_scores = detections[0].boxes.conf.cpu().numpy()
+        classes = detections[0].boxes.cls.cpu().numpy().astype(int)  # 类别索引
+
         for i in range(len(boxes)):
-            bbox_xywh.append(boxes[i].tolist())
-            confs.append([float(conf_scores[i])])
+            if classes[i] in CAR_CLASS_IDS:  # 只保留车辆类别
+                bbox_xywh.append(boxes[i].tolist())  # 转为 Python 列表
+                confs.append([float(conf_scores[i])])  # 置信度转换为浮点数并封装成列表
 
     if bbox_xywh:
         xywhs = torch.tensor(bbox_xywh, dtype=torch.float32).view(-1, 4)
