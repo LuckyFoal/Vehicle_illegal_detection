@@ -1,2 +1,4 @@
 intput_dir : res/input
 output_dir : res/output
+
+model_path : res/models
