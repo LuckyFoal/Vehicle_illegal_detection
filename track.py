@@ -3,6 +3,9 @@ from deep_sort_pytorch.utils.parser import get_config
 from deep_sort_pytorch.deep_sort import DeepSort
 
 import os
+import time
+import threading
+
 
 from pathlib import Path
 import cv2
@@ -12,8 +15,26 @@ import paddlehub as hub
 
 import utils.Strategy as Strategy
 import utils.vehicle as Vehicle
+import utils.algorithm as Algorithm
 import utils.test as Test
+from utils.vehicle import ILLEGAL_TRACKS as illegal_track
+from utils.vehicle import VEHICLES as VEHICLES
 import yaml
+
+# 读取配置文件
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
+
+DEEPSORT_CFG = config.get("deepsort_cfg", "deep_sort_pytorch/configs/deep_sort.yaml")
+OUTPUT_DIR = config.get("output_dir", "./output")
+
+# 初始化 OCR 车牌识别模型
+ocr = hub.Module(name="ch_pp-ocrv3", enable_mkldnn=True)
+
+# 违停区域 (x1, y1, x2, y2)
+NO_PARKING_ZONE = (100, 200, 1500, 2000)  # 这里需要根据实际情况修改
+
+PERFORM_CHECK = False
 
 
 def yolov_inference(image, video, model_id, image_size = 640, conf_threshold = 0.4):
@@ -35,16 +56,6 @@ def bbox_rel(*xyxy):
     w = bbox_w
     h = bbox_h
     return x_c, y_c, w, h
-
-# 读取配置文件
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
-
-DEEPSORT_CFG = config.get("deepsort_cfg", "deep_sort_pytorch/configs/deep_sort.yaml")
-OUTPUT_DIR = config.get("output_dir", "./output")
-
-# 初始化 OCR 车牌识别模型
-ocr = hub.Module(name="ch_pp-ocrv3", enable_mkldnn=True)
 
 def init_deepsort():
     """初始化 DeepSORT 目标跟踪器"""
@@ -132,25 +143,68 @@ def process_frame(frame, deepsort, model_id, image_size, conf_threshold):
         x1, y1, x2, y2, track_id = output[:5]
 
         if track_id not in Vehicle.VEHICLES:
-            Vehicle.VEHICLES[track_id] = Vehicle.Vehicle(track_id, None, bbox_rel(x1, y1, x2, y2))
-            print(f"New vehicle detected: ID {track_id}")
+            Vehicle.VEHICLES[track_id] = Vehicle.Vehicle(track_id, None, (x1, y1, x2, y2))
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        if PERFORM_CHECK:  # 违停检测仅每秒执行一次
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            vehicle_position = (x1, y1, x2, y2)
+            in_no_parking_zone = (
+                    NO_PARKING_ZONE[0] <= center_x <= NO_PARKING_ZONE[2] and
+                    NO_PARKING_ZONE[1] <= center_y <= NO_PARKING_ZONE[3]
+            )
+
+            if in_no_parking_zone:
+                if track_id not in illegal_track:
+                    illegal_track[track_id] = {"preposition": vehicle_position, "stop_time": 0}
+            else:
+                illegal_track.pop(track_id, None)  # 车辆离开禁停区域
+
+            # 车牌检测每秒执行一次
+        if PERFORM_CHECK:
+            vehicle_region = frame[y1:y2, x1:x2]  # 裁剪车辆区域
+            plate_coords = detect_plate(vehicle_region)  # 车牌检测
+            if plate_coords:
+                px1, py1, px2, py2 = plate_coords
+                plate_region = vehicle_region[py1:py2, px1:px2]  # 裁剪车牌区域
+                plate_number = recognize_plate_text(plate_region)  # 车牌OCR识别
+                if plate_number:
+                    Vehicle.VEHICLES[track_id].plate_number = plate_number  # 赋值车牌号
+                    print(f"Vehicle {track_id} - Plate: {plate_number}")
+
+        # 绘制检测框和车牌号
+        cv2.rectangle(frame, NO_PARKING_ZONE[0:2], NO_PARKING_ZONE[2:4], (255, 0, 0), 3) #绘制违停区域
+        if VEHICLES[track_id] and VEHICLES[track_id].isIllegal():
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(frame, f'Illegal', (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        else:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
         cv2.putText(frame, f'ID: {track_id} Plate: {Vehicle.VEHICLES[track_id].plate_number}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        vehicle_region = frame[y1:y2, x1:x2]  # 裁剪车辆区域
-        plate_coords = detect_plate(vehicle_region)  # 车牌检测
-
-        if plate_coords:
-            px1, py1, px2, py2 = plate_coords
-            plate_region = vehicle_region[py1:py2, px1:px2]  # 裁剪车牌区域
-            plate_number = recognize_plate_text(plate_region)  # 车牌OCR识别
-
-            if plate_number:
-                Vehicle.VEHICLES[track_id].plate_number = plate_number  # 赋值车牌号
-                print(f"Vehicle {track_id} - Plate: {plate_number}")
-
     return frame
+
+def illegal_track_detection():
+    violated_vehicles = []
+
+    for track_id, info in list(illegal_track.items()):
+        latest_position = Vehicle.VEHICLES[track_id].getLocation()
+
+        if not latest_position:
+            illegal_track.pop(track_id, None)
+            continue
+
+        if not Algorithm.is_vehicle_moving(latest_position, info["preposition"]):
+            info["stop_time"] += 1
+        else:
+            info["stop_time"] = 0
+            info["preposition"] = latest_position
+
+        if info["stop_time"] >= 1:
+            violated_vehicles.append(track_id)
+            VEHICLES[track_id].setIllegal(True)
+
+    if violated_vehicles:
+        print(f"⚠️ 违停车辆: {violated_vehicles}")
 
 
 def detector(source, model_id, image_size=640, conf_threshold=0.4):
@@ -165,13 +219,14 @@ def detector(source, model_id, image_size=640, conf_threshold=0.4):
         output_path = os.path.join(OUTPUT_DIR, f"output_{Path(source).stem}.mp4")
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
         if not out.isOpened():
             print("Error: VideoWriter failed to open!")
             return
 
     frame_count = 0
     count = 5
+    last_detection_time = 0 # 记录上次调用违停检测的时间（单位：秒）
+    global PERFORM_CHECK
 
     while True:
         if is_video:
@@ -182,10 +237,16 @@ def detector(source, model_id, image_size=640, conf_threshold=0.4):
         else:
             frame = cv2.imread(source)
 
+        # 每隔 1 秒进行一次违停检测（基于视频的时间）
+        frame_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000 # 获取当前帧的时间（秒）
+        if frame_time - last_detection_time >= 1:
+            illegal_track_detection()
+            last_detection_time = frame_time
+            PERFORM_CHECK = True
+
         frame = process_frame(frame, deepsort, model_id, image_size, conf_threshold)
-
+        PERFORM_CHECK = False
         cv2.imshow("Tracking", frame)
-
         count -= 1
         if is_video:
             print(f"Processing frame {frame_count}/{total_frames}")
@@ -204,5 +265,8 @@ def detector(source, model_id, image_size=640, conf_threshold=0.4):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    Test.test()
+    # Test.test()
+    start_time = time.time()
     detector('res/input/short.mp4', 'yolov12')
+    end_time = time.time()
+    print(f"Total time: {end_time - start_time} seconds")
