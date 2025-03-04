@@ -1,5 +1,6 @@
 global VEHICLES # List of vehicles
 VEHICLES = {}
+ILLEGAL_TRACKS = {}
 
 class Vehicle:
     def __init__(self, id, plate_number, location):
